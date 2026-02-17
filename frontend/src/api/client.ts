@@ -1,4 +1,17 @@
 const API_BASE = import.meta.env.VITE_API_URL || "";
+const TOKEN_KEY = "geo_audit_token";
+
+function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
@@ -7,12 +20,111 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...(options?.headers as Record<string, string>),
   };
 
+  // Inject auth token
+  const token = getToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const res = await fetch(url, { ...options, headers });
+
+  // On 401, clear token and redirect to login
+  if (res.status === 401) {
+    clearToken();
+    if (window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
+    throw new Error("Session expired. Please log in again.");
+  }
+
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || `Request failed: ${res.status}`);
   }
   return res.json();
+}
+
+// --- Auth Types ---
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  name: string;
+  role: "admin" | "member";
+  team_id: string;
+  team_name?: string;
+}
+
+export interface AuthResponse {
+  token: string;
+  user: AuthUser;
+}
+
+export interface TeamMember {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  created_at: string;
+}
+
+export interface InviteResponse {
+  invite_token: string;
+  email: string;
+}
+
+// --- Auth API functions ---
+
+export async function loginUser(
+  email: string,
+  password: string
+): Promise<AuthResponse> {
+  return request("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function registerUser(
+  email: string,
+  password: string,
+  name: string,
+  teamName?: string,
+  inviteToken?: string
+): Promise<AuthResponse> {
+  return request("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({
+      email,
+      password,
+      name,
+      team_name: teamName || undefined,
+      invite_token: inviteToken || undefined,
+    }),
+  });
+}
+
+export async function getMe(): Promise<AuthUser> {
+  return request("/api/auth/me");
+}
+
+// --- Team API functions ---
+
+export async function getTeamMembers(): Promise<TeamMember[]> {
+  return request("/api/team/members");
+}
+
+export async function inviteTeamMember(
+  email: string
+): Promise<InviteResponse> {
+  return request("/api/team/invite", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function removeTeamMember(userId: string): Promise<void> {
+  return request(`/api/team/members/${userId}`, { method: "DELETE" });
 }
 
 // --- Types ---
@@ -48,6 +160,7 @@ export interface JobResponse {
   errors: { url: string; stage: string; message: string }[];
   created_at?: string;
   completed_at?: string;
+  user_name?: string | null;
 }
 
 export interface SeedCrawlResponse {
@@ -100,6 +213,7 @@ export interface JobSummary {
   error_count?: number;
   created_at: string;
   completed_at?: string | null;
+  user_name?: string | null;
 }
 
 export interface ProjectDetail extends Project {

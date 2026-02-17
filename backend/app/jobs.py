@@ -1,8 +1,8 @@
 """
-Hybrid async job store — in-memory for running jobs, SQLite for persistence.
+Hybrid async job store — in-memory for running jobs, Postgres for persistence.
 
 Running / pending jobs live in ``_jobs`` so the polling endpoint is fast.
-On completion the full job (results + errors) is flushed to SQLite so it
+On completion the full job (results + errors) is flushed to Postgres so it
 survives restarts.  ``get_job`` falls back to the database when the id
 isn't found in memory.
 """
@@ -41,6 +41,8 @@ class Job:
     path_rules: dict[str, int] | None = None
     candidate_service_urls: list[str] | None = None
     project_id: str | None = None
+    user_id: str | None = None
+    user_name: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -56,6 +58,7 @@ class Job:
             "errors": self.errors,
             "created_at": self.created_at,
             "completed_at": self.completed_at,
+            "user_name": self.user_name,
         }
 
 
@@ -68,6 +71,8 @@ def create_job(
     path_rules: dict[str, int] | None = None,
     candidate_service_urls: list[str] | None = None,
     project_id: str | None = None,
+    user_id: str | None = None,
+    user_name: str | None = None,
 ) -> Job:
     job_id = uuid.uuid4().hex[:12]
     job = Job(
@@ -78,6 +83,8 @@ def create_job(
         path_rules=path_rules,
         candidate_service_urls=candidate_service_urls,
         project_id=project_id,
+        user_id=user_id,
+        user_name=user_name,
     )
     _jobs[job_id] = job
     return job
@@ -88,7 +95,7 @@ def get_job(job_id: str) -> Job | None:
 
 
 async def get_job_or_db(job_id: str) -> dict | None:
-    """Return job dict — from memory if running, otherwise from SQLite."""
+    """Return job dict — from memory if running, otherwise from Postgres."""
     job = _jobs.get(job_id)
     if job:
         return job.to_dict()
@@ -98,7 +105,7 @@ async def get_job_or_db(job_id: str) -> dict | None:
 
 
 async def _flush_to_db(job: Job) -> None:
-    """Persist a completed/failed job and its results to SQLite."""
+    """Persist a completed/failed job and its results to Postgres."""
     from . import db
 
     await db.save_job(
@@ -112,6 +119,7 @@ async def _flush_to_db(job: Job) -> None:
         path_rules=job.path_rules,
         candidate_service_urls=job.candidate_service_urls,
         project_id=job.project_id,
+        user_id=job.user_id,
     )
 
     for result in job.results:
@@ -120,7 +128,7 @@ async def _flush_to_db(job: Job) -> None:
     for error in job.errors:
         await db.save_audit_result(job.id, error.get("url", ""), error, is_error=True)
 
-    logger.info("Job %s flushed to SQLite (%d results, %d errors)", job.id, len(job.results), len(job.errors))
+    logger.info("Job %s flushed to Postgres (%d results, %d errors)", job.id, len(job.results), len(job.errors))
 
 
 async def run_audit_job(job: Job) -> None:
@@ -169,8 +177,8 @@ async def run_audit_job(job: Job) -> None:
     job.completed_at = datetime.now(timezone.utc).isoformat()
     job.status = JobStatus.COMPLETED if job.results else JobStatus.FAILED
 
-    # Flush to SQLite
+    # Flush to Postgres
     try:
         await _flush_to_db(job)
     except Exception:
-        logger.exception("Failed to flush job %s to SQLite", job.id)
+        logger.exception("Failed to flush job %s to Postgres", job.id)

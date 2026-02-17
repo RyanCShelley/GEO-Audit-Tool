@@ -82,6 +82,9 @@ export default function ReportPage() {
         </div>
       )}
       <h1>Audit Report</h1>
+      {job.user_name && (
+        <p className="text-muted">Run by: {job.user_name}</p>
+      )}
 
       {/* Progress bar */}
       {isRunning && (

@@ -10,14 +10,24 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+import asyncpg
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import db, jobs
+from .auth import (
+    create_access_token,
+    create_invite_token,
+    decode_invite_token,
+    get_current_user,
+    hash_password,
+    require_admin,
+    verify_password,
+)
 from .auditor import schema_fix, flatten
 from .wiki import wikidata
 
@@ -36,12 +46,17 @@ async def health():
     return {"status": "ok"}
 
 # ---------------------------------------------------------------------------
-# Startup
+# Startup / Shutdown
 # ---------------------------------------------------------------------------
 
 @app.on_event("startup")
 async def on_startup():
     await db.init_db()
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await db.close_db()
 
 # ---------------------------------------------------------------------------
 # CORS
@@ -74,23 +89,25 @@ def _check_rate_limit(client_ip: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Auth middleware (optional)
-# ---------------------------------------------------------------------------
-API_SECRET = os.environ.get("API_SECRET_KEY", "")
-
-
-@app.middleware("http")
-async def auth_middleware(request: Request, call_next):
-    if API_SECRET and request.url.path.startswith("/api/"):
-        token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        if token != API_SECRET:
-            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
-    return await call_next(request)
-
-
-# ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    name: str
+    team_name: str | None = None
+    invite_token: str | None = None
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class InviteRequest(BaseModel):
+    email: str
+
 
 class AuditRequest(BaseModel):
     urls: list[str] | None = None
@@ -130,48 +147,167 @@ class SetQidsRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Auth Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/api/auth/register")
+async def register(req: RegisterRequest):
+    # Check if user already exists
+    existing = await db.get_user_by_email(req.email)
+    if existing:
+        raise HTTPException(400, "Email already registered")
+
+    hashed = hash_password(req.password)
+
+    if req.invite_token:
+        # Invited user — join existing team
+        invite = decode_invite_token(req.invite_token)
+        if not invite:
+            raise HTTPException(400, "Invalid or expired invite token")
+        if invite["invite_email"].lower() != req.email.lower():
+            raise HTTPException(400, "Email does not match invitation")
+        team_id = invite["team_id"]
+        team = await db.get_team(team_id)
+        if not team:
+            raise HTTPException(400, "Team no longer exists")
+        try:
+            user = await db.create_user(team_id, req.email, req.name, hashed, role="member")
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(400, "Email already registered")
+    else:
+        # First user — create a new team
+        team_name = req.team_name or f"{req.name}'s Team"
+        team = await db.create_team(team_name)
+        try:
+            user = await db.create_user(team["id"], req.email, req.name, hashed, role="admin")
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(400, "Email already registered")
+
+    token = create_access_token(user["id"], user["team_id"], user["role"])
+    return {
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "name": user["name"],
+            "role": user["role"],
+            "team_id": user["team_id"],
+        },
+    }
+
+
+@app.post("/api/auth/login")
+async def login(req: LoginRequest):
+    user = await db.get_user_by_email(req.email)
+    if not user or not verify_password(req.password, user["password_hash"]):
+        raise HTTPException(401, "Invalid email or password")
+
+    team = await db.get_team(user["team_id"])
+    token = create_access_token(user["id"], user["team_id"], user["role"])
+    return {
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "name": user["name"],
+            "role": user["role"],
+            "team_id": user["team_id"],
+            "team_name": team["name"] if team else None,
+        },
+    }
+
+
+@app.get("/api/auth/me")
+async def get_me(user: dict = Depends(get_current_user)):
+    team = await db.get_team(user["team_id"])
+    return {
+        "id": user["user_id"],
+        "email": user["email"],
+        "name": user["name"],
+        "role": user["role"],
+        "team_id": user["team_id"],
+        "team_name": team["name"] if team else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Team Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/team/members")
+async def list_team_members(user: dict = Depends(require_admin)):
+    members = await db.get_team_members(user["team_id"])
+    return members
+
+
+@app.post("/api/team/invite")
+async def invite_member(req: InviteRequest, user: dict = Depends(require_admin)):
+    # Check if email is already on the team
+    existing = await db.get_user_by_email(req.email)
+    if existing and existing["team_id"] == user["team_id"]:
+        raise HTTPException(400, "User is already a team member")
+
+    token = create_invite_token(req.email, user["team_id"])
+    return {"invite_token": token, "email": req.email}
+
+
+@app.delete("/api/team/members/{member_id}")
+async def remove_member(member_id: str, user: dict = Depends(require_admin)):
+    if member_id == user["user_id"]:
+        raise HTTPException(400, "Cannot remove yourself")
+
+    # Verify member belongs to same team
+    member = await db.get_user_by_id(member_id)
+    if not member or member["team_id"] != user["team_id"]:
+        raise HTTPException(404, "Member not found")
+
+    await db.delete_user(member_id)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Project Endpoints
 # ---------------------------------------------------------------------------
 
 @app.post("/api/projects")
-async def create_project(req: ProjectCreateRequest):
-    project = await db.create_project(req.name, req.description)
+async def create_project(req: ProjectCreateRequest, user: dict = Depends(get_current_user)):
+    project = await db.create_project(req.name, req.description, team_id=user["team_id"])
     return project
 
 
 @app.get("/api/projects")
-async def list_projects():
-    return await db.list_projects()
+async def list_projects(user: dict = Depends(get_current_user)):
+    return await db.list_projects(team_id=user["team_id"])
 
 
 @app.get("/api/projects/{project_id}")
-async def get_project(project_id: str):
-    project = await db.get_project(project_id)
+async def get_project(project_id: str, user: dict = Depends(get_current_user)):
+    project = await db.get_project(project_id, team_id=user["team_id"])
     if not project:
         raise HTTPException(404, "Project not found.")
     return project
 
 
 @app.put("/api/projects/{project_id}")
-async def update_project(project_id: str, req: ProjectUpdateRequest):
-    project = await db.update_project(project_id, name=req.name, description=req.description)
+async def update_project(project_id: str, req: ProjectUpdateRequest, user: dict = Depends(get_current_user)):
+    project = await db.update_project(project_id, team_id=user["team_id"], name=req.name, description=req.description)
     if not project:
         raise HTTPException(404, "Project not found.")
     return project
 
 
 @app.delete("/api/projects/{project_id}")
-async def delete_project(project_id: str):
-    deleted = await db.delete_project(project_id)
+async def delete_project(project_id: str, user: dict = Depends(get_current_user)):
+    deleted = await db.delete_project(project_id, team_id=user["team_id"])
     if not deleted:
         raise HTTPException(404, "Project not found.")
     return {"ok": True}
 
 
 @app.post("/api/projects/{project_id}/urls")
-async def add_project_urls(project_id: str, req: AddUrlsRequest):
-    # Verify project exists
-    project = await db.get_project(project_id)
+async def add_project_urls(project_id: str, req: AddUrlsRequest, user: dict = Depends(get_current_user)):
+    # Verify project belongs to team
+    project = await db.get_project(project_id, team_id=user["team_id"])
     if not project:
         raise HTTPException(404, "Project not found.")
     added = await db.add_project_urls(project_id, req.urls)
@@ -179,7 +315,11 @@ async def add_project_urls(project_id: str, req: AddUrlsRequest):
 
 
 @app.delete("/api/projects/{project_id}/urls/{url_id}")
-async def remove_project_url(project_id: str, url_id: str):
+async def remove_project_url(project_id: str, url_id: str, user: dict = Depends(get_current_user)):
+    # Verify project belongs to team
+    project = await db.get_project(project_id, team_id=user["team_id"])
+    if not project:
+        raise HTTPException(404, "Project not found.")
     removed = await db.remove_project_url(project_id, url_id)
     if not removed:
         raise HTTPException(404, "URL not found.")
@@ -187,7 +327,11 @@ async def remove_project_url(project_id: str, url_id: str):
 
 
 @app.get("/api/projects/{project_id}/urls/{url_id}/history")
-async def get_url_history(project_id: str, url_id: str):
+async def get_url_history(project_id: str, url_id: str, user: dict = Depends(get_current_user)):
+    # Verify project belongs to team
+    project = await db.get_project(project_id, team_id=user["team_id"])
+    if not project:
+        raise HTTPException(404, "Project not found.")
     history = await db.get_url_history(project_id, url_id)
     if not history:
         raise HTTPException(404, "URL not found.")
@@ -195,12 +339,18 @@ async def get_url_history(project_id: str, url_id: str):
 
 
 @app.get("/api/projects/{project_id}/qids")
-async def get_project_qids(project_id: str, url: str):
+async def get_project_qids(project_id: str, url: str, user: dict = Depends(get_current_user)):
+    project = await db.get_project(project_id, team_id=user["team_id"])
+    if not project:
+        raise HTTPException(404, "Project not found.")
     return await db.get_approved_qids(project_id, url)
 
 
 @app.put("/api/projects/{project_id}/qids")
-async def set_project_qids(project_id: str, req: SetQidsRequest):
+async def set_project_qids(project_id: str, req: SetQidsRequest, user: dict = Depends(get_current_user)):
+    project = await db.get_project(project_id, team_id=user["team_id"])
+    if not project:
+        raise HTTPException(404, "Project not found.")
     await db.set_approved_qids(project_id, req.url, req.qids)
     return {"ok": True}
 
@@ -210,7 +360,7 @@ async def set_project_qids(project_id: str, req: SetQidsRequest):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/audit")
-async def start_audit(req: AuditRequest, background_tasks: BackgroundTasks, request: Request):
+async def start_audit(req: AuditRequest, background_tasks: BackgroundTasks, request: Request, user: dict = Depends(get_current_user)):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(client_ip):
         raise HTTPException(429, "Rate limit exceeded. Try again in a minute.")
@@ -235,21 +385,27 @@ async def start_audit(req: AuditRequest, background_tasks: BackgroundTasks, requ
     if len(urls) > MAX_URLS:
         raise HTTPException(400, f"Maximum {MAX_URLS} URLs per audit.")
 
-    # If project_id provided, auto-add URLs to the project
+    # If project_id provided, verify it belongs to user's team and auto-add URLs
     if req.project_id:
-        project = await db.get_project(req.project_id)
+        project = await db.get_project(req.project_id, team_id=user["team_id"])
         if not project:
             raise HTTPException(404, "Project not found.")
         await db.add_project_urls(req.project_id, urls)
 
-    job = jobs.create_job(urls, path_rules=req.path_rules, project_id=req.project_id)
+    job = jobs.create_job(
+        urls,
+        path_rules=req.path_rules,
+        project_id=req.project_id,
+        user_id=user["user_id"],
+        user_name=user["name"],
+    )
     background_tasks.add_task(jobs.run_audit_job, job)
 
     return {"job_id": job.id, "status": job.status.value, "total_urls": len(urls)}
 
 
 @app.get("/api/audit/{job_id}")
-async def get_audit(job_id: str):
+async def get_audit(job_id: str, user: dict = Depends(get_current_user)):
     result = await jobs.get_job_or_db(job_id)
     if not result:
         raise HTTPException(404, "Job not found.")
@@ -257,7 +413,7 @@ async def get_audit(job_id: str):
 
 
 @app.post("/api/audit/report")
-async def regenerate_report(req: ReportRequest):
+async def regenerate_report(req: ReportRequest, user: dict = Depends(get_current_user)):
     from .auditor.service import regenerate_with_qids
 
     # Look up original job to get path_rules and candidate URLs
@@ -274,15 +430,18 @@ async def regenerate_report(req: ReportRequest):
 
     # If project_id provided, persist approved QIDs and save result
     if req.project_id:
-        await db.set_approved_qids(req.project_id, req.url, req.approved_qids)
-        if "error" not in result and req.job_id:
-            await db.save_audit_result(req.job_id, req.url, result, is_error=False)
+        # Verify project belongs to team
+        project = await db.get_project(req.project_id, team_id=user["team_id"])
+        if project:
+            await db.set_approved_qids(req.project_id, req.url, req.approved_qids)
+            if "error" not in result and req.job_id:
+                await db.save_audit_result(req.job_id, req.url, result, is_error=False)
 
     return result
 
 
 @app.post("/api/schema/validate")
-async def validate_schema(req: ValidateRequest):
+async def validate_schema(req: ValidateRequest, user: dict = Depends(get_current_user)):
     fixed, corrections = schema_fix.run_pipeline(req.jsonld)
     flattened = flatten.flatten_graph(fixed)
     return {
@@ -293,7 +452,7 @@ async def validate_schema(req: ValidateRequest):
 
 
 @app.get("/api/wikidata/search")
-async def wikidata_search(q: str, limit: int = 5):
+async def wikidata_search(q: str, limit: int = 5, user: dict = Depends(get_current_user)):
     results = await wikidata.search_entities(q, limit=limit)
     return {"query": q, "results": results}
 

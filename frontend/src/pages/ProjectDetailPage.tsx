@@ -272,6 +272,7 @@ export default function ProjectDetailPage() {
                 <th>Date</th>
                 <th>Status</th>
                 <th>URLs</th>
+                <th>Run By</th>
                 <th></th>
               </tr>
             </thead>
@@ -283,6 +284,7 @@ export default function ProjectDetailPage() {
                     <span className={`status-badge status-badge--${j.status}`}>{j.status}</span>
                   </td>
                   <td>{j.url_count ?? j.progress_total ?? "—"}</td>
+                  <td>{j.user_name ?? "—"}</td>
                   <td>
                     <Link to={`/project/${projectId}/report/${j.id}`} className="btn btn--small">
                       View Report
