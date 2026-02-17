@@ -1,0 +1,23 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+
+# Build output
+frontend/dist/
+
+# Data
+backend/data/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
