@@ -6,6 +6,7 @@ Uses asyncpg for async access with a connection pool.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -443,8 +444,8 @@ async def save_job(
             progress_current,
             progress_total,
             current_url,
-            path_rules,
-            candidate_service_urls,
+            json.dumps(path_rules) if path_rules is not None else None,
+            json.dumps(candidate_service_urls) if candidate_service_urls is not None else None,
             created_ts,
             completed_ts,
         )
@@ -455,7 +456,7 @@ async def save_audit_result(job_id: str, url: str, data: dict, is_error: bool = 
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO audit_results (id, job_id, url, is_error, data, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-            _id(), job_id, url, is_error, data, datetime.fromisoformat(_now()),
+            _id(), job_id, url, is_error, json.dumps(data), datetime.fromisoformat(_now()),
         )
 
 
