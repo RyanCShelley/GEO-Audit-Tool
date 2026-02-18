@@ -331,6 +331,12 @@ body {
   white-space: pre-wrap;
 }
 
+.export-section {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--color-border);
+}
+
 .jsonld-actions {
   display: flex;
   gap: 0.5rem;

@@ -277,6 +277,43 @@ export default function ReportPage() {
       {!isRunning && job.results.length === 0 && (
         <p>No results were produced. Check errors above.</p>
       )}
+
+      {!isRunning && job.results.length > 0 && (
+        <div className="export-section">
+          <button className="btn btn--primary" onClick={handleExportCsv}>
+            Export All Results (CSV)
+          </button>
+        </div>
+      )}
     </div>
   );
+
+  function handleExportCsv() {
+    if (!job || job.results.length === 0) return;
+
+    const escapeCsv = (val: string) => {
+      if (val.includes('"') || val.includes(",") || val.includes("\n")) {
+        return `"${val.replace(/"/g, '""')}"`;
+      }
+      return val;
+    };
+
+    const headers = ["URL", "Page Intent", "Visibility Diagnosis", "Fix Plan", "JSON-LD"];
+    const rows = job.results.map((r) => [
+      escapeCsv(r.url),
+      escapeCsv(r.page_intent || ""),
+      escapeCsv(r.visibility_diagnosis || ""),
+      escapeCsv(r.fix_plan || ""),
+      escapeCsv(r.json_ld ? JSON.stringify(r.json_ld) : ""),
+    ]);
+
+    const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `geo-audit-${job.job_id}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 }
