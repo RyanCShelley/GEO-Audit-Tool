@@ -89,14 +89,24 @@ IMPORTANT RULE (Service URLs):
 - If the current page IS the service page, set Service.url to this page URL.
 - If NO dedicated service page exists, OMIT Service.url (do NOT point everything to the homepage).
 {qid_section}
---- JSON-LD STRUCTURE RULES (MANDATORY) ---
-Your JSON-LD output MUST follow this structure:
+--- JSON-LD STRUCTURE RULES (MANDATORY — MUST MATCH schema.org) ---
+Your JSON-LD output MUST follow this structure AND only use properties valid on each type per https://schema.org/docs/schemas.html:
+
 1) "logo" MUST be an ImageObject: {{ "@type": "ImageObject", "url": "<logo_url>" }} — NEVER a bare string.
 2) Include a WebSite node: @id = "<site_url>/#website", url, name, publisher -> #organization.
-3) WebPage: isPartOf -> #website (NOT #organization); mainEntity -> #service when the page is about a service.
-4) Put "about" ONLY on WebPage (the GEO entity bridge). NEVER put "about" on Service or ProfessionalService nodes.
-5) Service: linked from WebPage via mainEntity; provider -> #organization. No "about" on Service.
-6) Use @id references (e.g. {{ "@id": "<url>/#organization" }}) to link nodes — do not duplicate data.
+3) WebPage: isPartOf -> #website (NOT #organization); mainEntity -> #service.
+   Valid properties: name, url, description, isPartOf, mainEntity, about, breadcrumb, datePublished, dateModified.
+4) Put "about" ONLY on WebPage (the GEO entity bridge). NEVER on Service or Organization nodes.
+5) Organization / LocalBusiness / ProfessionalService:
+   Valid properties: name, url, logo, description, address, telephone, email, sameAs, areaServed, geo, priceRange, openingHours, parentOrganization.
+   NOTE: "provider" is NOT valid on ProfessionalService or Organization. Use "parentOrganization" instead.
+6) Service (use this type for service offerings, NOT ProfessionalService):
+   Valid properties: name, url, description, provider, serviceType, areaServed, offers, category.
+   "provider" IS valid here — link to #organization.
+7) Use @id references (e.g. {{ "@id": "<url>/#organization" }}) to link nodes — do not duplicate data.
+8) IMPORTANT: Only use properties that exist on schema.org for the given @type.
+   Check the type hierarchy: ProfessionalService → LocalBusiness → Organization → Thing.
+   Service → Intangible → Thing. These are DIFFERENT branches — do not mix their properties.
 
 --- SCHEMA PARSE ERRORS (first 3) ---
 {json.dumps(schema_parse_errors[:3], indent=2)}

@@ -210,7 +210,126 @@ def set_main_entity(graph: list[dict]) -> tuple[list[dict], list[dict]]:
 
 
 # ---------------------------------------------------------------------------
-# Transform 5: validate @id references
+# Transform 5: validate properties against schema.org
+# ---------------------------------------------------------------------------
+
+# Valid properties per schema.org type (common types we generate).
+# Includes inherited properties from parent types.
+# Meta properties (@context, @type, @id, @graph) are always allowed.
+_VALID_PROPERTIES: dict[str, set[str]] = {
+    "Organization": {
+        "name", "url", "logo", "description", "sameAs", "address", "telephone",
+        "email", "foundingDate", "founder", "numberOfEmployees", "areaServed",
+        "image", "identifier", "alternateName", "contactPoint", "member",
+        "department", "subOrganization", "parentOrganization", "brand",
+        "award", "knowsAbout", "slogan", "legalName", "taxID",
+    },
+    "LocalBusiness": {
+        "name", "url", "logo", "description", "sameAs", "address", "telephone",
+        "email", "foundingDate", "areaServed", "image", "identifier",
+        "alternateName", "contactPoint", "parentOrganization", "brand",
+        "openingHours", "openingHoursSpecification", "priceRange", "geo",
+        "review", "aggregateRating", "hasOfferCatalog", "paymentAccepted",
+        "currenciesAccepted", "menu", "servesCuisine",
+    },
+    "ProfessionalService": {
+        "name", "url", "logo", "description", "sameAs", "address", "telephone",
+        "email", "foundingDate", "areaServed", "image", "identifier",
+        "alternateName", "contactPoint", "parentOrganization", "brand",
+        "openingHours", "openingHoursSpecification", "priceRange", "geo",
+        "review", "aggregateRating", "hasOfferCatalog", "serviceType",
+        "knowsAbout", "slogan",
+    },
+    "Service": {
+        "name", "url", "description", "sameAs", "image", "identifier",
+        "provider", "serviceType", "areaServed", "offers", "hasOfferCatalog",
+        "category", "serviceOutput", "serviceArea", "availableChannel",
+        "termsOfService", "aggregateRating", "review", "brand",
+        "alternateName",
+    },
+    "WebSite": {
+        "name", "url", "description", "publisher", "potentialAction",
+        "sameAs", "alternateName", "inLanguage",
+    },
+    "WebPage": {
+        "name", "url", "description", "isPartOf", "mainEntity", "about",
+        "breadcrumb", "primaryImageOfPage", "datePublished", "dateModified",
+        "author", "inLanguage", "potentialAction", "sameAs", "significantLink",
+        "speakable", "relatedLink", "lastReviewed", "reviewedBy",
+    },
+    "ImageObject": {
+        "url", "contentUrl", "width", "height", "caption", "description",
+        "name", "encodingFormat", "thumbnail",
+    },
+    "Thing": {
+        "name", "url", "description", "sameAs", "identifier", "image",
+        "alternateName",
+    },
+}
+
+# Properties that can be moved to a valid alternative
+_PROPERTY_FIXES: dict[str, dict[str, str | None]] = {
+    # provider is not valid on Organization-based types → remove it
+    "Organization": {"provider": None},
+    "LocalBusiness": {"provider": None},
+    "ProfessionalService": {"provider": None},
+    # about is not valid on Service → remove (already handled by fix_about_placement)
+    "Service": {"about": None},
+}
+
+_META_KEYS = {"@context", "@type", "@id", "@graph", "@vocab", "@reverse", "@language"}
+
+
+def validate_properties(graph: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Remove properties not valid for their schema.org type."""
+    corrections = []
+    for node in graph:
+        node_type = node.get("@type", "")
+        types = [node_type] if isinstance(node_type, str) else list(node_type)
+
+        # Collect all valid properties for this node's types
+        valid = set(_META_KEYS)
+        matched_type = False
+        for t in types:
+            if t in _VALID_PROPERTIES:
+                valid |= _VALID_PROPERTIES[t]
+                matched_type = True
+
+        if not matched_type:
+            # Unknown type — skip validation
+            continue
+
+        # Check for fixable properties first
+        for t in types:
+            if t in _PROPERTY_FIXES:
+                for bad_prop, replacement in _PROPERTY_FIXES[t].items():
+                    if bad_prop in node:
+                        val = node.pop(bad_prop)
+                        detail = f"Removed invalid '{bad_prop}' from {t}"
+                        if replacement and replacement not in node:
+                            node[replacement] = val
+                            detail = f"Replaced invalid '{bad_prop}' with '{replacement}' on {t}"
+                        corrections.append({
+                            "transform": "validate_properties",
+                            "node_id": node.get("@id", "?"),
+                            "detail": detail,
+                        })
+
+        # Remove remaining invalid properties
+        invalid_keys = [k for k in node if k not in valid]
+        for k in invalid_keys:
+            node.pop(k)
+            corrections.append({
+                "transform": "validate_properties",
+                "node_id": node.get("@id", "?"),
+                "detail": f"Removed invalid property '{k}' from {'/'.join(types)} (not in schema.org spec)",
+            })
+
+    return graph, corrections
+
+
+# ---------------------------------------------------------------------------
+# Transform 6: validate @id references
 # ---------------------------------------------------------------------------
 
 def validate_id_refs(graph: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -247,6 +366,7 @@ TRANSFORMS = [
     ensure_website_node,
     fix_about_placement,
     set_main_entity,
+    validate_properties,
     validate_id_refs,
 ]
 
