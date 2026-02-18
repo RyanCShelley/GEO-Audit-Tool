@@ -13,6 +13,7 @@ export default function AuditPage() {
   const [candidateUrls, setCandidateUrls] = useState<string[]>([]);
   const [selectedCandidates, setSelectedCandidates] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [crawled, setCrawled] = useState(false);
   const [error, setError] = useState("");
 
   const reportBase = projectId ? `/project/${projectId}/report` : "/report";
@@ -25,6 +26,7 @@ export default function AuditPage() {
       const res = await startSeedCrawl(seedUrl.trim());
       setCandidateUrls(res.candidate_urls);
       setSelectedCandidates(new Set(res.candidate_urls.slice(0, 5)));
+      setCrawled(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Seed crawl failed");
     } finally {
@@ -134,6 +136,12 @@ export default function AuditPage() {
               {loading ? "Crawling..." : "Discover URLs"}
             </button>
           </div>
+
+          {candidateUrls.length === 0 && !loading && crawled && (
+            <p className="text-muted" style={{ marginTop: "1rem" }}>
+              No candidate URLs found. Try a different seed URL, or switch to Direct URLs mode.
+            </p>
+          )}
 
           {candidateUrls.length > 0 && (
             <div className="candidate-urls">

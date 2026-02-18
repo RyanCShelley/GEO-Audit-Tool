@@ -99,12 +99,19 @@ def score_candidate_urls(
             for pattern, weight in rules.items():
                 if pattern.lower() in path:
                     score += weight
-        else:
-            # Generic: prefer shallower paths
-            depth = len([s for s in path.split("/") if s])
-            score = max(0, 10 - depth)
-
         if score > 0:
+            scored.append((score, u))
+
+    # If keyword rules matched nothing, fall back to depth-based ranking
+    # so any site still returns useful candidates
+    if not scored:
+        for u in links:
+            path = urlparse(u).path.lower()
+            # Skip homepage, assets, and common non-content paths
+            if path in ("", "/") or any(ext in path for ext in (".png", ".jpg", ".css", ".js", ".xml", ".pdf")):
+                continue
+            depth = len([s for s in path.split("/") if s])
+            score = max(0.1, 10 - depth)
             scored.append((score, u))
 
     scored.sort(reverse=True, key=lambda x: x[0])
