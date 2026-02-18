@@ -39,20 +39,24 @@ export default function LoginPage() {
       <div className="login-card">
         <h1 className="login-card__title">GEO Audit Tool</h1>
 
-        <div className="login-tabs">
-          <button
-            className={`login-tab ${mode === "login" ? "login-tab--active" : ""}`}
-            onClick={() => { setMode("login"); setError(""); }}
-          >
-            Sign In
-          </button>
-          <button
-            className={`login-tab ${mode === "register" ? "login-tab--active" : ""}`}
-            onClick={() => { setMode("register"); setError(""); }}
-          >
-            Register
-          </button>
-        </div>
+        {inviteToken ? (
+          <div className="login-tabs">
+            <button
+              className={`login-tab ${mode === "login" ? "login-tab--active" : ""}`}
+              onClick={() => { setMode("login"); setError(""); }}
+            >
+              Sign In
+            </button>
+            <button
+              className={`login-tab ${mode === "register" ? "login-tab--active" : ""}`}
+              onClick={() => { setMode("register"); setError(""); }}
+            >
+              Register
+            </button>
+          </div>
+        ) : (
+          <p className="login-card__subtitle">Sign in to your account</p>
+        )}
 
         {inviteToken && mode === "register" && (
           <p className="login-card__invite-notice">

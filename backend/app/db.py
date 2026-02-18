@@ -148,6 +148,13 @@ async def create_team(name: str) -> dict:
     return {"id": tid, "name": name, "created_at": now}
 
 
+async def has_any_users() -> bool:
+    pool = _get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT EXISTS(SELECT 1 FROM users) AS has_users")
+    return row["has_users"]
+
+
 async def get_team(team_id: str) -> dict | None:
     pool = _get_pool()
     async with pool.acquire() as conn:

@@ -159,6 +159,8 @@ async def register(req: RegisterRequest):
 
     hashed = hash_password(req.password)
 
+    has_users = await db.has_any_users()
+
     if req.invite_token:
         # Invited user — join existing team
         invite = decode_invite_token(req.invite_token)
@@ -174,14 +176,16 @@ async def register(req: RegisterRequest):
             user = await db.create_user(team_id, req.email, req.name, hashed, role="member")
         except asyncpg.UniqueViolationError:
             raise HTTPException(400, "Email already registered")
-    else:
-        # First user — create a new team
+    elif not has_users:
+        # First user ever — create a new team as admin
         team_name = req.team_name or f"{req.name}'s Team"
         team = await db.create_team(team_name)
         try:
             user = await db.create_user(team["id"], req.email, req.name, hashed, role="admin")
         except asyncpg.UniqueViolationError:
             raise HTTPException(400, "Email already registered")
+    else:
+        raise HTTPException(403, "Registration requires an invite link. Contact your team admin.")
 
     token = create_access_token(user["id"], user["team_id"], user["role"])
     return {
