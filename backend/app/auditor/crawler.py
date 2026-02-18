@@ -54,23 +54,75 @@ def simulate_rag_chunking(
 # Link extraction & scoring
 # ---------------------------------------------------------------------------
 
+_SKIP_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".css", ".js", ".xml", ".pdf", ".zip", ".ico")
+_SKIP_PATHS = ("/wp-content/", "/wp-admin/", "/feed/", "/tag/", "/author/", "/cart", "/checkout", "/account", "/login", "/signup")
+
+
+def _resolve_internal(href: str, base_url: str, base_domain: str) -> str | None:
+    """Resolve an href to an absolute internal URL, or None if external/invalid."""
+    href = (href or "").strip()
+    if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+        return None
+    abs_url = urljoin(base_url, href).split("#")[0].rstrip("/")
+    if urlparse(abs_url).netloc != base_domain:
+        return None
+    path = urlparse(abs_url).path.lower()
+    if path in ("", "/"):
+        return None
+    if any(path.endswith(ext) for ext in _SKIP_EXTENSIONS):
+        return None
+    if any(skip in path for skip in _SKIP_PATHS):
+        return None
+    return abs_url
+
+
 def extract_internal_links(html: str, base_url: str) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
     base_domain = urlparse(base_url).netloc
     links: set[str] = set()
     for a in soup.select("a[href]"):
-        href = (a.get("href") or "").strip()
-        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
-            continue
-        abs_url = urljoin(base_url, href).split("#")[0].rstrip("/")
-        if urlparse(abs_url).netloc == base_domain:
-            links.add(abs_url)
+        resolved = _resolve_internal(a.get("href", ""), base_url, base_domain)
+        if resolved:
+            links.add(resolved)
     return sorted(links)
 
 
-_DEFAULT_PATH_RULES: dict[str, int] = {
-    "/services/": 6,
-    "/service/": 5,
+def extract_nav_links(html: str, base_url: str) -> list[str]:
+    """Extract internal links from <nav>, <header>, and common nav patterns."""
+    soup = BeautifulSoup(html, "html.parser")
+    base_domain = urlparse(base_url).netloc
+    nav_links: list[str] = []
+    seen: set[str] = set()
+
+    # Look in <nav>, <header>, and elements with nav-like roles/classes
+    nav_selectors = [
+        "nav a[href]",
+        "header a[href]",
+        "[role='navigation'] a[href]",
+        ".nav a[href]",
+        ".navbar a[href]",
+        ".menu a[href]",
+        ".main-menu a[href]",
+        ".primary-menu a[href]",
+        ".site-nav a[href]",
+    ]
+
+    for selector in nav_selectors:
+        for a in soup.select(selector):
+            resolved = _resolve_internal(a.get("href", ""), base_url, base_domain)
+            if resolved and resolved not in seen:
+                seen.add(resolved)
+                nav_links.append(resolved)
+
+    return nav_links
+
+
+_DEFAULT_PATH_BOOST: dict[str, int] = {
+    "/services/": 4,
+    "/service/": 4,
+    "/about": 2,
+    "/contact": 1,
+    "/blog": 1,
     "/geo": 3,
     "/seo": 2,
     "/ppc": 2,
@@ -82,37 +134,33 @@ _DEFAULT_PATH_RULES: dict[str, int] = {
 def score_candidate_urls(
     links: list[str],
     path_rules: dict[str, int] | None = None,
+    nav_links: list[str] | None = None,
     top_n: int = 30,
 ) -> list[str]:
-    """Score and rank internal links by path keywords.
-
-    If *path_rules* is None the default keyword set is used.
-    If *path_rules* is an empty dict, a generic depth-based ranking is used.
-    """
-    rules = path_rules if path_rules is not None else _DEFAULT_PATH_RULES
+    """Score and rank internal links. Navigation links get top priority."""
+    boost_rules = path_rules if path_rules is not None else _DEFAULT_PATH_BOOST
+    nav_set = set(nav_links or [])
 
     scored: list[tuple[float, str]] = []
     for u in links:
         path = urlparse(u).path.lower()
         score = 0.0
-        if rules:
-            for pattern, weight in rules.items():
+
+        # Navigation links get a big bonus — these are the site's key pages
+        if u in nav_set:
+            score += 10
+
+        # Path keyword boost
+        if boost_rules:
+            for pattern, weight in boost_rules.items():
                 if pattern.lower() in path:
                     score += weight
-        if score > 0:
-            scored.append((score, u))
 
-    # If keyword rules matched nothing, fall back to depth-based ranking
-    # so any site still returns useful candidates
-    if not scored:
-        for u in links:
-            path = urlparse(u).path.lower()
-            # Skip homepage, assets, and common non-content paths
-            if path in ("", "/") or any(ext in path for ext in (".png", ".jpg", ".css", ".js", ".xml", ".pdf")):
-                continue
-            depth = len([s for s in path.split("/") if s])
-            score = max(0.1, 10 - depth)
-            scored.append((score, u))
+        # Depth-based score — shallower pages are more important
+        depth = len([s for s in path.split("/") if s])
+        score += max(0, 5 - depth)
+
+        scored.append((score, u))
 
     scored.sort(reverse=True, key=lambda x: x[0])
     return [u for _, u in scored[:top_n]]
@@ -261,8 +309,9 @@ async def fetch_page_data(
     parsed, errors = parse_jsonld_blocks(raw_blocks)
 
     if candidate_service_urls is None:
+        nav = extract_nav_links(primary_html, url)
         internal_links = extract_internal_links(primary_html, url)
-        candidate_service_urls = score_candidate_urls(internal_links, path_rules=path_rules)
+        candidate_service_urls = score_candidate_urls(internal_links, path_rules=path_rules, nav_links=nav)
 
     server_audit = audit_html(server_html) if server_html else None
     rendered_audit = audit_html(rendered_html) if rendered_html else None

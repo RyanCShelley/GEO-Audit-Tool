@@ -373,13 +373,14 @@ async def start_audit(req: AuditRequest, background_tasks: BackgroundTasks, requ
 
     if req.seed_url and not urls:
         # Crawl seed URL to discover candidate URLs
-        from .auditor.crawler import fetch_server_html, extract_internal_links, score_candidate_urls
+        from .auditor.crawler import fetch_server_html, extract_internal_links, extract_nav_links, score_candidate_urls
 
         html = await fetch_server_html(req.seed_url)
         if not html:
             raise HTTPException(400, f"Could not fetch seed URL: {req.seed_url}")
+        nav = extract_nav_links(html, req.seed_url)
         internal = extract_internal_links(html, req.seed_url)
-        candidates = score_candidate_urls(internal, path_rules=req.path_rules)
+        candidates = score_candidate_urls(internal, path_rules=req.path_rules, nav_links=nav)
         # Return candidates for user to select (don't start audit yet)
         return {"mode": "seed_crawl", "seed_url": req.seed_url, "candidate_urls": candidates}
 
