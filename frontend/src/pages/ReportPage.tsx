@@ -180,12 +180,23 @@ export default function ReportPage() {
                     <pre className="code-block">
                       {JSON.stringify(result.json_ld, null, 2)}
                     </pre>
-                    <button
-                      className="btn btn--small"
-                      onClick={() => navigator.clipboard.writeText(JSON.stringify(result.json_ld, null, 2))}
-                    >
-                      Copy JSON-LD
-                    </button>
+                    <div className="jsonld-actions">
+                      <button
+                        className="btn btn--small"
+                        onClick={() => navigator.clipboard.writeText(JSON.stringify(result.json_ld, null, 2))}
+                      >
+                        Copy JSON-LD
+                      </button>
+                      <button
+                        className="btn btn--small btn--primary"
+                        onClick={() => {
+                          navigator.clipboard.writeText(JSON.stringify(result.json_ld, null, 2));
+                          window.open("https://validator.schema.org/", "_blank");
+                        }}
+                      >
+                        Validate on Schema.org
+                      </button>
+                    </div>
                   </>
                 ) : (
                   <p>No JSON-LD generated.</p>
