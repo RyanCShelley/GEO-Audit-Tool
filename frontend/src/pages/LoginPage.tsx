@@ -37,6 +37,7 @@ export default function LoginPage() {
   return (
     <div className="login-page">
       <div className="login-card">
+        <img src="/sma-logo.png" alt="SMA Marketing" className="login-card__logo" />
         <h1 className="login-card__title">GEO Audit Tool</h1>
 
         {inviteToken ? (

@@ -29,7 +29,8 @@ function AppRoutes() {
     <>
       <header className="app-header">
         <Link to="/" className="app-header__logo">
-          GEO Audit Tool
+          <img src="/sma-logo.png" alt="SMA Marketing" className="app-header__logo-img" />
+          <span>GEO Audit Tool</span>
         </Link>
         <nav className="app-header__nav">
           <Link to="/">Projects</Link>
