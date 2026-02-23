@@ -471,10 +471,14 @@ if FRONTEND_BUILD.is_dir():
     # Serve static assets (JS, CSS, images)
     app.mount("/assets", StaticFiles(directory=FRONTEND_BUILD / "assets"), name="assets")
 
-    # Catch-all: serve index.html for SPA routing
+    # Catch-all: serve static files from build dir, then fall back to index.html for SPA routing
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         from fastapi.responses import FileResponse
+        # Check if a real file exists in the build directory (e.g. sma-logo.png, favicon.ico)
+        requested = FRONTEND_BUILD / full_path
+        if full_path and requested.is_file():
+            return FileResponse(requested)
         index = FRONTEND_BUILD / "index.html"
         if index.exists():
             return FileResponse(index)
