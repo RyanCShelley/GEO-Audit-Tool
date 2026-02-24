@@ -28,13 +28,25 @@ def _id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """Set up JSONB codec so values are automatically decoded/encoded."""
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema="pg_catalog",
+    )
+
+
 async def init_db() -> None:
     """Create the connection pool and all tables if they don't exist."""
     global _pool
     database_url = os.environ.get("DATABASE_URL", "")
     if not database_url:
         raise RuntimeError("DATABASE_URL environment variable is required")
-    _pool = await asyncpg.create_pool(database_url, min_size=2, max_size=10)
+    _pool = await asyncpg.create_pool(
+        database_url, min_size=2, max_size=10, init=_init_connection
+    )
 
     async with _pool.acquire() as conn:
         await conn.execute("""
@@ -444,8 +456,8 @@ async def save_job(
             progress_current,
             progress_total,
             current_url,
-            json.dumps(path_rules) if path_rules is not None else None,
-            json.dumps(candidate_service_urls) if candidate_service_urls is not None else None,
+            path_rules,
+            candidate_service_urls,
             created_ts,
             completed_ts,
         )
@@ -456,7 +468,7 @@ async def save_audit_result(job_id: str, url: str, data: dict, is_error: bool = 
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO audit_results (id, job_id, url, is_error, data, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-            _id(), job_id, url, is_error, json.dumps(data), datetime.fromisoformat(_now()),
+            _id(), job_id, url, is_error, data, datetime.fromisoformat(_now()),
         )
 
 
